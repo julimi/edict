@@ -103,6 +103,7 @@ _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-\u4e00-\u9fff]+$')
 BASE = pathlib.Path(__file__).parent
 DIST = BASE / 'dist'          # React 构建产物 (npm run build)
 DATA = get_shared_data_dir(__file__)
+DEFAULT_DATA = DATA
 DATA.mkdir(parents=True, exist_ok=True)
 SCRIPTS = BASE.parent / 'scripts'
 _ACTIVE_TASK_DATA_DIR = None
@@ -167,6 +168,12 @@ def _task_source_score(task_file: pathlib.Path):
 def get_task_data_dir():
     """自动选择当前任务数据目录，并缓存结果以保持一次服务期内稳定。"""
     global _ACTIVE_TASK_DATA_DIR
+    # Tests and one-off local tooling patch `DATA` directly; honor that override
+    # instead of re-discovering another workspace data directory.
+    if DATA != DEFAULT_DATA:
+        _ACTIVE_TASK_DATA_DIR = DATA
+        if _ACTIVE_TASK_DATA_DIR.is_dir():
+            return _ACTIVE_TASK_DATA_DIR
     if _ACTIVE_TASK_DATA_DIR and _ACTIVE_TASK_DATA_DIR.is_dir():
         return _ACTIVE_TASK_DATA_DIR
     best_dir = DATA
