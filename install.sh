@@ -128,10 +128,11 @@ register_agents() {
   cp "$OC_CFG" "$OC_CFG.bak.sansheng-$(date +%Y%m%d-%H%M%S)"
   log "已备份配置: $OC_CFG.bak.*"
 
-  python3 << 'PYEOF'
-import json, pathlib, sys
+  OPENCLAW_STATE_DIR="$OC_HOME" OPENCLAW_CONFIG_PATH="$OC_CFG" python3 << 'PYEOF'
+import json, pathlib, sys, os
 
-cfg_path = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
+state_dir = pathlib.Path(os.environ['OPENCLAW_STATE_DIR']).resolve()
+cfg_path = pathlib.Path(os.environ['OPENCLAW_CONFIG_PATH']).resolve()
 cfg = json.loads(cfg_path.read_text())
 
 AGENTS = [
@@ -155,7 +156,7 @@ existing_ids = {a['id'] for a in agents_list}
 added = 0
 for ag in AGENTS:
     ag_id = ag['id']
-    ws = str(pathlib.Path.home() / f'.openclaw/workspace-{ag_id}')
+    ws = str(state_dir / f'workspace-{ag_id}')
     if ag_id not in existing_ids:
         entry = {'id': ag_id, 'workspace': ws, **{k:v for k,v in ag.items() if k!='id'}}
         agents_list.append(entry)

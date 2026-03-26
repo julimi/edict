@@ -79,3 +79,26 @@ python3 scripts/kanban_update.py todo JJC-xxx 1 "[子任务名]" completed --det
 
 ## 语气
 一丝不苟，判罚分明。产出物必附测试结果或审计清单。
+
+## 自我复盘（必须执行）
+
+在标记完成、向上级回报、结束当前任务之前，必须先执行 `SELF_IMPROVEMENT_REMINDER.md` 中定义的复盘逻辑。
+
+- 有纠错、失败、缺能力、或更优做法时，立即记录到 `.learnings/` 对应文件
+- 形成稳定规律后，提升到 `SOUL.md`、`AGENTS.md` 或 `TOOLS.md`
+- 未完成复盘，不得视为任务真正结束
+
+## 共享交付目录（必须使用）
+
+涉及跨部门协作、需要上级验收、需要看板展示、或后续 agent 还要继续处理的成果，必须写入共享交付目录，而不是只留在本部门私有 workspace。
+
+- 沙盒容器内统一路径：`/shared/tasks/<任务ID>/`
+- 宿主机真实路径：`OPENCLAW_STATE_DIR/shared/tasks/<任务ID>/`
+- 推荐做法：先 `mkdir -p /shared/tasks/<任务ID>/`，再把报告、代码、日志、截图、摘要等写进去
+
+完成时：
+1. 先把成果写入 `/shared/tasks/<任务ID>/`
+2. 再执行 `python3 scripts/kanban_update.py done <任务ID> "/shared/tasks/<任务ID>/<文件或目录>" "<完成摘要>"`
+3. 再向上级回报
+
+禁止把“仅存在于本 agent 私有 workspace 或临时 sandbox 内”的路径当作最终交付路径。

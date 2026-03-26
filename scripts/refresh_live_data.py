@@ -2,12 +2,19 @@
 import json, pathlib, datetime, logging
 from file_lock import atomic_json_write, atomic_json_read
 from utils import read_json
+from runtime_state import get_kanban_data_dir
 
 log = logging.getLogger('refresh')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 BASE = pathlib.Path(__file__).parent.parent
-DATA = BASE / 'data'
+DATA = get_kanban_data_dir(__file__)
+DATA.mkdir(parents=True, exist_ok=True)
+TASKS_SOURCE_FILE = DATA / 'tasks_source.json'
+TASKS_FALLBACK_FILE = DATA / 'tasks.json'
+OFFICIALS_STATS_FILE = DATA / 'officials_stats.json'
+SYNC_STATUS_FILE = DATA / 'sync_status.json'
+LIVE_STATUS_FILE = DATA / 'live_status.json'
 
 
 def output_meta(path):
@@ -20,14 +27,14 @@ def output_meta(path):
 
 def main():
     # 使用 officials_stats.json（与 sync_officials_stats.py 统一）
-    officials_data = read_json(DATA / 'officials_stats.json', {})
+    officials_data = read_json(OFFICIALS_STATS_FILE, {})
     officials = officials_data.get('officials', []) if isinstance(officials_data, dict) else officials_data
     # 任务源优先：tasks_source.json（可对接外部系统同步写入）
-    tasks = atomic_json_read(DATA / 'tasks_source.json', [])
+    tasks = atomic_json_read(TASKS_SOURCE_FILE, [])
     if not tasks:
-        tasks = read_json(DATA / 'tasks.json', [])
+        tasks = read_json(TASKS_FALLBACK_FILE, [])
 
-    sync_status = read_json(DATA / 'sync_status.json', {})
+    sync_status = read_json(SYNC_STATUS_FILE, {})
 
     org_map = {}
     for o in officials:
@@ -95,7 +102,7 @@ def main():
 
     payload = {
         'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'taskSource': 'tasks_source.json' if (DATA / 'tasks_source.json').exists() else 'tasks.json',
+        'taskSource': TASKS_SOURCE_FILE.name if TASKS_SOURCE_FILE.exists() else TASKS_FALLBACK_FILE.name,
         'officials': officials,
         'tasks': tasks,
         'history': history,
@@ -114,7 +121,7 @@ def main():
         }
     }
 
-    atomic_json_write(DATA / 'live_status.json', payload)
+    atomic_json_write(LIVE_STATUS_FILE, payload)
     log.info(f'updated live_status.json ({len(tasks)} tasks)')
 
 

@@ -5,14 +5,30 @@
 """
 import json, os, pathlib, datetime, logging
 from file_lock import atomic_json_write
+from data_paths import get_shared_data_dir
+from runtime_state import (
+    get_agent_workspace,
+    get_openclaw_config_path,
+    get_openclaw_home,
+)
 
 log = logging.getLogger('sync_agent_config')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 # Auto-detect project root (parent of scripts/)
 BASE = pathlib.Path(__file__).parent.parent
-DATA = BASE / 'data'
-OPENCLAW_CFG = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
+DATA = get_shared_data_dir(__file__)
+DATA.mkdir(parents=True, exist_ok=True)
+OPENCLAW_STATE_DIR = get_openclaw_home(__file__)
+OPENCLAW_CFG = get_openclaw_config_path(__file__)
+
+
+def workspace_dir(agent_id):
+    return get_agent_workspace(agent_id, __file__)
+
+
+def agents_dir(agent_id):
+    return OPENCLAW_STATE_DIR / 'agents' / agent_id
 
 ID_LABEL = {
     'taizi':    {'label': '太子',   'role': '太子',     'duty': '飞书消息分拣与回奏',  'emoji': '🤴'},
@@ -127,7 +143,7 @@ def main():
         if ag_id not in ID_LABEL:
             continue
         meta = ID_LABEL[ag_id]
-        workspace = ag.get('workspace', str(pathlib.Path.home() / f'.openclaw/workspace-{ag_id}'))
+        workspace = ag.get('workspace', str(workspace_dir(ag_id)))
         if 'allowAgents' in ag:
             allow_agents = ag.get('allowAgents', []) or []
         else:
@@ -145,13 +161,13 @@ def main():
 
     # 补充不在 openclaw.json agents list 中的 agent（兼容旧版 main）
     EXTRA_AGENTS = {
-        'taizi':   {'model': default_model, 'workspace': str(pathlib.Path.home() / '.openclaw/workspace-taizi'),
+        'taizi':   {'model': default_model, 'workspace': str(workspace_dir('taizi')),
                     'allowAgents': ['zhongshu']},
-        'main':    {'model': default_model, 'workspace': str(pathlib.Path.home() / '.openclaw/workspace-main'),
+        'main':    {'model': default_model, 'workspace': str(workspace_dir('main')),
                     'allowAgents': ['zhongshu','menxia','shangshu','hubu','libu','bingbu','xingbu','gongbu','libu_hr']},
-        'zaochao': {'model': default_model, 'workspace': str(pathlib.Path.home() / '.openclaw/workspace-zaochao'),
+        'zaochao': {'model': default_model, 'workspace': str(workspace_dir('zaochao')),
                     'allowAgents': []},
-        'libu_hr': {'model': default_model, 'workspace': str(pathlib.Path.home() / '.openclaw/workspace-libu_hr'),
+        'libu_hr': {'model': default_model, 'workspace': str(workspace_dir('libu_hr')),
                     'allowAgents': ['shangshu']},
     }
     for ag_id, extra in EXTRA_AGENTS.items():
@@ -244,7 +260,7 @@ def sync_scripts_to_workspaces():
         return
     synced = 0
     for proj_name, runtime_id in _SOUL_DEPLOY_MAP.items():
-        ws_scripts = pathlib.Path.home() / f'.openclaw/workspace-{runtime_id}' / 'scripts'
+        ws_scripts = workspace_dir(runtime_id) / 'scripts'
         ws_scripts.mkdir(parents=True, exist_ok=True)
         for src_file in scripts_src.iterdir():
             if src_file.suffix not in ('.py', '.sh') or src_file.stem.startswith('__'):
@@ -256,7 +272,7 @@ def sync_scripts_to_workspaces():
             except Exception:
                 continue
     # also sync to workspace-main for legacy compatibility
-    ws_main_scripts = pathlib.Path.home() / '.openclaw/workspace-main/scripts'
+    ws_main_scripts = workspace_dir('main') / 'scripts'
     ws_main_scripts.mkdir(parents=True, exist_ok=True)
     for src_file in scripts_src.iterdir():
         if src_file.suffix not in ('.py', '.sh') or src_file.stem.startswith('__'):
@@ -272,14 +288,14 @@ def sync_scripts_to_workspaces():
 
 
 def deploy_soul_files():
-    """将项目 agents/xxx/SOUL.md 部署到 ~/.openclaw/workspace-xxx/soul.md"""
-    agents_dir = BASE / 'agents'
+    """将项目 agents/xxx/SOUL.md 部署到当前 OPENCLAW_STATE_DIR/workspace-xxx/soul.md"""
+    agents_src_dir = BASE / 'agents'
     deployed = 0
     for proj_name, runtime_id in _SOUL_DEPLOY_MAP.items():
-        src = agents_dir / proj_name / 'SOUL.md'
+        src = agents_src_dir / proj_name / 'SOUL.md'
         if not src.exists():
             continue
-        ws_dst = pathlib.Path.home() / f'.openclaw/workspace-{runtime_id}' / 'soul.md'
+        ws_dst = workspace_dir(runtime_id) / 'soul.md'
         ws_dst.parent.mkdir(parents=True, exist_ok=True)
         # 只在内容不同时更新（避免不必要的写入）
         src_text = src.read_text(encoding='utf-8', errors='ignore')
@@ -292,7 +308,7 @@ def deploy_soul_files():
             deployed += 1
         # 太子兼容：同步一份到 legacy main agent 目录
         if runtime_id == 'taizi':
-            ag_dst = pathlib.Path.home() / '.openclaw/agents/main/SOUL.md'
+            ag_dst = agents_dir('main') / 'SOUL.md'
             ag_dst.parent.mkdir(parents=True, exist_ok=True)
             try:
                 ag_text = ag_dst.read_text(encoding='utf-8', errors='ignore')
@@ -301,7 +317,7 @@ def deploy_soul_files():
             if src_text != ag_text:
                 ag_dst.write_text(src_text, encoding='utf-8')
         # 确保 sessions 目录存在
-        sess_dir = pathlib.Path.home() / f'.openclaw/agents/{runtime_id}/sessions'
+        sess_dir = agents_dir(runtime_id) / 'sessions'
         sess_dir.mkdir(parents=True, exist_ok=True)
     if deployed:
         log.info(f'{deployed} SOUL.md files deployed')

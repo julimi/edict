@@ -29,12 +29,26 @@
   # 🔥 实时进展汇报（Agent 主动调用，频率不限）
   python3 kanban_update.py progress JJC-20260223-012 "正在分析需求，拟定3个子方案" "1.调研技术选型|2.撰写设计文档|3.实现原型"
 """
-import datetime
-import json, pathlib, sys, subprocess, logging, os, re
+import json, pathlib, datetime, sys, subprocess, logging, os, re
+from data_paths import get_shared_data_dir
+from runtime_state import get_openclaw_home, get_shared_host_root
+from workflow_rules import (
+    TERMINAL_STATES,
+    can_actor_transition,
+    can_create_with_state,
+    can_transition_state,
+    ensure_task_exists,
+    validate_done_prerequisites,
+)
 
-_BASE = pathlib.Path(os.environ['EDICT_HOME']) if 'EDICT_HOME' in os.environ else pathlib.Path(__file__).resolve().parent.parent
-TASKS_FILE = _BASE / 'data' / 'tasks_source.json'
+_BASE = pathlib.Path(__file__).resolve().parent.parent
+DATA = get_shared_data_dir(__file__)
+DATA.mkdir(parents=True, exist_ok=True)
+TASKS_FILE = DATA / 'tasks_source.json'
 REFRESH_SCRIPT = _BASE / 'scripts' / 'refresh_live_data.py'
+OPENCLAW_STATE_DIR = get_openclaw_home(__file__)
+SHARED_HOST_ROOT = get_shared_host_root(__file__)
+SHARED_CONTAINER_ROOT = pathlib.Path('/shared')
 
 log = logging.getLogger('kanban')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -73,6 +87,47 @@ _AGENT_LABELS = {
 
 MAX_PROGRESS_LOG = 100  # 单任务最大进展日志条数
 
+
+def shared_task_dir(task_id):
+    return SHARED_HOST_ROOT / 'tasks' / task_id
+
+
+def normalize_output_path(task_id, output_path=''):
+    raw = (output_path or '').strip()
+    task_dir = shared_task_dir(task_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    if not raw:
+        return str(task_dir)
+
+    p = pathlib.Path(raw)
+    if p.is_absolute():
+        try:
+            if str(p).startswith(str(SHARED_CONTAINER_ROOT)):
+                rel = p.relative_to(SHARED_CONTAINER_ROOT)
+                return str((SHARED_HOST_ROOT / rel).resolve())
+        except Exception:
+            pass
+        return str(p)
+
+    return str((task_dir / raw).resolve())
+
+
+def is_shared_output_path(path_value=''):
+    raw = (path_value or '').strip()
+    if not raw:
+        return True
+    try:
+        p = pathlib.Path(raw)
+        if p.is_absolute():
+            if str(p).startswith(str(SHARED_CONTAINER_ROOT)):
+                return True
+            return str(p.resolve()).startswith(str(SHARED_HOST_ROOT.resolve()))
+        resolved = (shared_task_dir('PATH-CHECK') / raw).resolve()
+        return str(resolved).startswith(str((SHARED_HOST_ROOT / 'tasks').resolve()))
+    except Exception:
+        return False
+
 def load():
     return atomic_json_read(TASKS_FILE, [])
 
@@ -86,6 +141,16 @@ def _trigger_refresh():
 
 def find_task(tasks, task_id):
     return next((t for t in tasks if t.get('id') == task_id), None)
+
+
+def get_task_or_warn(tasks, task_id):
+    task = find_task(tasks, task_id)
+    ok, msg = ensure_task_exists(task, task_id)
+    if ok:
+        return task
+    log.error(msg)
+    print(f'[看板] {msg}', flush=True)
+    return None
 
 
 # 旨意标题最低要求
@@ -180,6 +245,11 @@ def cmd_create(task_id, title, state, org, official, remark=None):
     """新建任务（收旨时立即调用）"""
     # 清洗标题（剥离元数据）
     title = _sanitize_title(title)
+    allowed, reason = can_create_with_state(state)
+    if not allowed:
+        log.warning(f'⚠️ 拒绝创建 {task_id}：{reason}')
+        print(f'[看板] 拒绝创建：{reason}', flush=True)
+        return
     # 旨意标题校验
     valid, reason = _is_valid_task_title(title)
     if not valid:
@@ -231,19 +301,25 @@ _VALID_TRANSITIONS = {
 
 
 def cmd_state(task_id, new_state, now_text=None):
-    """更新任务状态（原子操作，含流转合法性校验）"""
-    old_state = [None]
-    rejected = [False]
+    """更新任务状态（原子操作）"""
+    result = {'old_state': None, 'updated': False, 'error': ''}
     def modifier(tasks):
-        t = find_task(tasks, task_id)
+        t = get_task_or_warn(tasks, task_id)
         if not t:
-            log.error(f'任务 {task_id} 不存在')
             return tasks
-        old_state[0] = t['state']
-        allowed = _VALID_TRANSITIONS.get(old_state[0])
-        if allowed is not None and new_state not in allowed:
-            log.warning(f'⚠️ 非法状态转换 {task_id}: {old_state[0]} → {new_state}（允许: {allowed}）')
-            rejected[0] = True
+        result['old_state'] = t.get('state')
+        allowed, reason = can_transition_state(result['old_state'], new_state)
+        if not allowed:
+            result['error'] = reason
+            log.error(reason)
+            print(f'[看板] {reason}', flush=True)
+            return tasks
+        actor_id = _infer_agent_id_from_runtime(t)
+        allowed, reason = can_actor_transition(t, result['old_state'], new_state, actor_id)
+        if not allowed:
+            result['error'] = reason
+            log.error(reason)
+            print(f'[看板] {reason}', flush=True)
             return tasks
         t['state'] = new_state
         if new_state in STATE_ORG_MAP:
@@ -251,13 +327,13 @@ def cmd_state(task_id, new_state, now_text=None):
         if now_text:
             t['now'] = now_text
         t['updatedAt'] = now_iso()
+        result['updated'] = True
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
-    if rejected[0]:
-        log.info(f'❌ {task_id} 状态转换被拒: {old_state[0]} → {new_state}')
-    else:
-        log.info(f'✅ {task_id} 状态更新: {old_state[0]} → {new_state}')
+    if not result['updated']:
+        return
+    log.info(f'✅ {task_id} 状态更新: {result["old_state"]} → {new_state}')
 
 
 def cmd_flow(task_id, from_dept, to_dept, remark):
@@ -265,10 +341,10 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     clean_remark = _sanitize_remark(remark)
     agent_id = _infer_agent_id_from_runtime()
     agent_label = _AGENT_LABELS.get(agent_id, agent_id)
+    updated = [False]
     def modifier(tasks):
-        t = find_task(tasks, task_id)
+        t = get_task_or_warn(tasks, task_id)
         if not t:
-            log.error(f'任务 {task_id} 不存在')
             return tasks
         t.setdefault('flow_log', []).append({
             "at": now_iso(), "from": from_dept, "to": to_dept, "remark": clean_remark,
@@ -277,21 +353,54 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         # 同步更新 org，使看板能正确显示当前所属部门
         t['org'] = to_dept
         t['updatedAt'] = now_iso()
+        updated[0] = True
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    if not updated[0]:
+        return
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
 
 
 def cmd_done(task_id, output_path='', summary=''):
     """标记任务完成（原子操作）"""
+    if not is_shared_output_path(output_path):
+        msg = (
+            f'拒绝完成 {task_id}：交付路径必须位于共享目录。'
+            '请改用 /shared/tasks/<任务ID>/... 或留空让系统自动落到共享目录。'
+        )
+        log.error(msg)
+        print(f'[看板] {msg}', flush=True)
+        return
+    final_output_path = normalize_output_path(task_id, output_path)
+    updated = [False]
+    error = ['']
     def modifier(tasks):
-        t = find_task(tasks, task_id)
+        t = get_task_or_warn(tasks, task_id)
         if not t:
-            log.error(f'任务 {task_id} 不存在')
             return tasks
+        allowed, reason = can_transition_state(t.get('state'), 'Done')
+        if not allowed:
+            error[0] = reason
+            log.error(reason)
+            print(f'[看板] {reason}', flush=True)
+            return tasks
+        actor_id = _infer_agent_id_from_runtime(t)
+        allowed, reason = can_actor_transition(t, t.get('state'), 'Done', actor_id)
+        if not allowed:
+            error[0] = reason
+            log.error(reason)
+            print(f'[看板] {reason}', flush=True)
+            return tasks
+        allowed, reason = validate_done_prerequisites(t, final_output_path)
+        if not allowed:
+            error[0] = reason
+            log.error(reason)
+            print(f'[看板] {reason}', flush=True)
+            return tasks
+        updated[0] = True
         t['state'] = 'Done'
-        t['output'] = output_path
+        t['output'] = final_output_path
         t['now'] = summary or '任务已完成'
         t.setdefault('flow_log', []).append({
             "at": now_iso(), "from": t.get('org', '执行部门'),
@@ -309,22 +418,33 @@ def cmd_done(task_id, output_path='', summary=''):
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
-    log.info(f'✅ {task_id} 已完成')
+    if not updated[0]:
+        return
+    log.info(f'✅ {task_id} 已完成 | output={final_output_path}')
 
 
 def cmd_block(task_id, reason):
     """标记阻塞（原子操作）"""
+    updated = [False]
     def modifier(tasks):
-        t = find_task(tasks, task_id)
+        t = get_task_or_warn(tasks, task_id)
         if not t:
-            log.error(f'任务 {task_id} 不存在')
+            return tasks
+        actor_id = _infer_agent_id_from_runtime(t)
+        allowed, actor_reason = can_actor_transition(t, t.get('state'), 'Blocked', actor_id)
+        if not allowed:
+            log.error(actor_reason)
+            print(f'[看板] {actor_reason}', flush=True)
             return tasks
         t['state'] = 'Blocked'
         t['block'] = reason
         t['updatedAt'] = now_iso()
+        updated[0] = True
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    if not updated[0]:
+        return
     log.warning(f'⚠️ {task_id} 已阻塞: {reason}')
 
 
@@ -379,10 +499,15 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
 
     done_cnt = [0]
     total_cnt = [0]
+    updated = [False]
     def modifier(tasks):
-        t = find_task(tasks, task_id)
+        t = get_task_or_warn(tasks, task_id)
         if not t:
-            log.error(f'任务 {task_id} 不存在')
+            return tasks
+        if t.get('state') in TERMINAL_STATES:
+            msg = f'任务已处于终态 {t.get("state")}，不可继续写入 progress'
+            log.error(msg)
+            print(f'[看板] {msg}', flush=True)
             return tasks
         t['now'] = clean
         if parsed_todos is not None:
@@ -411,9 +536,12 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
         t['updatedAt'] = at
         done_cnt[0] = sum(1 for td in t.get('todos', []) if td.get('status') == 'completed')
         total_cnt[0] = len(t.get('todos', []))
+        updated[0] = True
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    if not updated[0]:
+        return
     res_info = ''
     if tokens or cost or elapsed:
         res_info = f' [res: {tokens}tok/${cost:.4f}/{elapsed}s]'
@@ -429,10 +557,15 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
     if status not in ('not-started', 'in-progress', 'completed'):
         status = 'not-started'
     result_info = [0, 0]
+    updated = [False]
     def modifier(tasks):
-        t = find_task(tasks, task_id)
+        t = get_task_or_warn(tasks, task_id)
         if not t:
-            log.error(f'任务 {task_id} 不存在')
+            return tasks
+        if t.get('state') in TERMINAL_STATES:
+            msg = f'任务已处于终态 {t.get("state")}，不可继续修改 todo'
+            log.error(msg)
+            print(f'[看板] {msg}', flush=True)
             return tasks
         if 'todos' not in t:
             t['todos'] = []
@@ -451,9 +584,12 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
         t['updatedAt'] = now_iso()
         result_info[0] = sum(1 for td in t['todos'] if td.get('status') == 'completed')
         result_info[1] = len(t['todos'])
+        updated[0] = True
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    if not updated[0]:
+        return
     log.info(f'✅ {task_id} todo [{result_info[0]}/{result_info[1]}]: {todo_id} → {status}')
 
 _CMD_MIN_ARGS = {

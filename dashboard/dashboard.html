@@ -1907,7 +1907,7 @@ function openAddSkillForm(agentId, agentLabel){
     <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:18px;font-size:12px;line-height:1.7;color:var(--muted)">
       <b style="color:var(--text)">📋 Skill 规范说明</b><br>
       • 技能名称使用<b style="color:var(--text)">小写英文 + 连字符</b>，如 <code style="background:var(--bg);padding:2px 6px;border-radius:4px">data-analysis</code>、<code style="background:var(--bg);padding:2px 6px;border-radius:4px">code-review</code><br>
-      • 创建后会在 <code style="background:var(--bg);padding:2px 6px;border-radius:4px">~/.openclaw/workspace-${esc(agentId)}/skills/{name}/SKILL.md</code> 生成模板文件<br>
+      • 创建后会在 <code style="background:var(--bg);padding:2px 6px;border-radius:4px">$OPENCLAW_STATE_DIR/workspace-${esc(agentId)}/skills/{name}/SKILL.md</code> 生成模板文件<br>
       • SKILL.md 使用 <b style="color:var(--text)">YAML frontmatter</b> 头部（name + description），正文为 Markdown 格式<br>
       • 技能会在 agent 收到相关任务时<b style="color:var(--text)">自动激活</b>，无需手动触发
     </div>

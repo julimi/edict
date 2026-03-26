@@ -2,14 +2,22 @@
 """同步各官员统计数据 → data/officials_stats.json"""
 import json, pathlib, datetime, logging
 from file_lock import atomic_json_write
+from data_paths import get_shared_data_dir
+from runtime_state import (
+    get_agent_sessions_dir,
+    get_agent_sessions_file,
+    get_agents_root,
+    get_openclaw_config_path,
+)
 
 log = logging.getLogger('officials')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
-DATA = BASE / 'data'
-AGENTS_ROOT = pathlib.Path.home() / '.openclaw' / 'agents'
-OPENCLAW_CFG = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
+DATA = get_shared_data_dir(__file__)
+DATA.mkdir(parents=True, exist_ok=True)
+AGENTS_ROOT = get_agents_root(__file__)
+OPENCLAW_CFG = get_openclaw_config_path(__file__)
 
 # Anthropic 定价（每1M token，美元）
 MODEL_PRICING = {
@@ -73,9 +81,9 @@ def get_model(agent_id):
 
 def scan_agent(agent_id):
     """从 sessions.json 读取 token 统计（累计所有 session）"""
-    sj = AGENTS_ROOT / agent_id / 'sessions' / 'sessions.json'
+    sj = get_agent_sessions_file(agent_id, __file__)
     if not sj.exists() and agent_id == 'taizi':
-        sj = AGENTS_ROOT / 'main' / 'sessions' / 'sessions.json'
+        sj = get_agent_sessions_file('main', __file__)
     if not sj.exists():
         return {'tokens_in':0,'tokens_out':0,'cache_read':0,'cache_write':0,'sessions':0,'last_active':None,'messages':0}
     
@@ -105,7 +113,9 @@ def scan_agent(agent_id):
     else:
         sf_key = None
     if sf_key and data[sf_key].get('sessionFile'):
-        sf = AGENTS_ROOT / agent_id / 'sessions' / pathlib.Path(data[sf_key]['sessionFile']).name
+        sf = get_agent_sessions_dir(agent_id, __file__) / pathlib.Path(data[sf_key]['sessionFile']).name
+        if not sf.exists() and agent_id == 'taizi':
+            sf = get_agent_sessions_dir('main', __file__) / pathlib.Path(data[sf_key]['sessionFile']).name
         try:
             lines = sf.read_text(errors='ignore').splitlines()
             for ln in lines:

@@ -31,7 +31,7 @@ chmod +x install.sh && ./install.sh
 ```
 
 安装脚本会自动完成：
-- ✅ 创建 12 个 Agent Workspace（`~/.openclaw/workspace-*`）
+- ✅ 创建 12 个 Agent Workspace（`$OPENCLAW_STATE_DIR/workspace-*`，默认回退到 `~/.openclaw/workspace-*`）
 - ✅ 写入各省部 SOUL.md 人格文件
 - ✅ 注册 Agent 及权限矩阵到 `openclaw.json`
 - ✅ 配置旨意数据清洗规则

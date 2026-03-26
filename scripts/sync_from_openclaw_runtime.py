@@ -6,15 +6,17 @@ import datetime
 import traceback
 import logging
 from file_lock import atomic_json_write, atomic_json_read
+from data_paths import get_shared_data_dir
+from runtime_state import get_agent_sessions_file, get_agents_root
 
 log = logging.getLogger('sync_runtime')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
-DATA = BASE / 'data'
+DATA = get_shared_data_dir(__file__)
 DATA.mkdir(exist_ok=True)
 SYNC_STATUS = DATA / 'sync_status.json'
-SESSIONS_ROOT = pathlib.Path.home() / '.openclaw' / 'agents'
+SESSIONS_ROOT = get_agents_root(__file__)
 
 
 def write_status(**kwargs):
@@ -59,7 +61,7 @@ def detect_official(agent_id):
 
 
 def load_activity(session_file, limit=12):
-    p = pathlib.Path(session_file or '')
+    p = pathlib.Path(session_file or '').expanduser()
     if not p.exists():
         return []
     rows = []
@@ -218,7 +220,7 @@ def main():
                 if not agent_dir.is_dir():
                     continue
                 agent_id = agent_dir.name
-                sessions_file = agent_dir / 'sessions' / 'sessions.json'
+                sessions_file = get_agent_sessions_file(agent_id, __file__)
                 if not sessions_file.exists():
                     continue
                 scan_files += 1
@@ -308,7 +310,7 @@ def main():
         existing_tasks_file = DATA / 'tasks_source.json'
         if existing_tasks_file.exists():
             try:
-                existing = json.loads(existing_tasks_file.read_text())
+                existing = atomic_json_read(existing_tasks_file, [])
                 jjc_existing = [t for t in existing if str(t.get('id', '')).startswith('JJC')]
                 
                 # 去掉 tasks 里已有的 JJC（以防重复），再把旨意放到最前面

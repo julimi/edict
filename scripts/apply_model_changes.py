@@ -2,13 +2,18 @@
 """应用 data/pending_model_changes.json → openclaw.json，并重启 Gateway"""
 import json, pathlib, subprocess, datetime, shutil, logging, glob
 from file_lock import atomic_json_write, atomic_json_read
+from data_paths import get_shared_data_dir
+from runtime_state import get_openclaw_config_path, get_openclaw_home
+from openclaw_adapter import run_openclaw
 
 log = logging.getLogger('model_change')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 BASE = pathlib.Path(__file__).parent.parent
-DATA = BASE / 'data'
-OPENCLAW_CFG = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
+DATA = get_shared_data_dir(__file__)
+DATA.mkdir(parents=True, exist_ok=True)
+OPENCLAW_STATE_DIR = get_openclaw_home(__file__)
+OPENCLAW_CFG = get_openclaw_config_path(__file__)
 PENDING = DATA / 'pending_model_changes.json'
 CHANGE_LOG = DATA / 'model_change_log.json'
 MAX_BACKUPS = 10
@@ -92,7 +97,7 @@ def main():
         restart_ok = False
         rollback = False
         try:
-            r = subprocess.run(['openclaw', 'gateway', 'restart'], capture_output=True, text=True, timeout=30)
+            r = run_openclaw(['gateway', 'restart'], timeout=30, script_path=__file__)
             restart_ok = r.returncode == 0
             log.info(f'gateway restart rc={r.returncode}')
         except Exception as e:
